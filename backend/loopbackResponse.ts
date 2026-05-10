@@ -10,7 +10,6 @@ async function handleRedisResponse() {
     try {
       const result = await redis.brpop("response-queue-" + QUEUE_ID, 0);
       const parsedResult = JSON.parse(result?.[1]!);
-      console.log(parsedResult);
       const identifier = parsedResult.identifier;
       const resolve = resolveMap[identifier];
       if (resolve) {

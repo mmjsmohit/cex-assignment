@@ -26,12 +26,6 @@ export function processLimitBuy(
   }
 
   // 2. Try to match with existing Asks (Sellers)
-  console.log(
-    "Remaining Quantity is: ",
-    remainingQty,
-    "\nCurrent state of Book is ",
-    book,
-  );
   while (remainingQty > 0 && book!.asks.length > 0) {
     const bestAsk = book?.asks[0]; // Lowest price seller
 
