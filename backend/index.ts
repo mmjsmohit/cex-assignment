@@ -111,6 +111,13 @@ app.post("/order", authMiddleware, async (req, res) => {
   const userId = req.userId;
   const { price, quantity, market_id, trade_side, order_type } = req.body;
   let identifier = randomUUID();
+  const normalizedTradeSide = String(trade_side).toUpperCase();
+
+  if (normalizedTradeSide !== "BUY" && normalizedTradeSide !== "SELL") {
+    return res.status(400).json({
+      message: "trade_side must be BUY or SELL",
+    });
+  }
 
   const market = await prisma.market.findFirst({
     where: {
@@ -118,6 +125,13 @@ app.post("/order", authMiddleware, async (req, res) => {
     },
   });
 
+  if (!market) {
+    return res.status(404).json({
+      message: "Market not found",
+    });
+  }
+
+  const loopbackResponsePromise = getLoopbackResponse(identifier);
   await publisherClient.send("LPUSH", [
     "incoming-orders",
     JSON.stringify({
@@ -127,14 +141,14 @@ app.post("/order", authMiddleware, async (req, res) => {
       price,
       quantity,
       market_id,
-      trade_side,
+      trade_side: normalizedTradeSide,
       order_type,
       market,
       queue_id: QUEUE_ID,
     }),
   ]);
 
-  const loopbackResponse = await getLoopbackResponse(identifier);
+  const loopbackResponse = await loopbackResponsePromise;
   res.json({
     message: "Order Pushed to Queue Successfully",
     identifier,
@@ -164,28 +178,31 @@ app.get("/fills", (req, res) => {});
 
 // Allows the user to add balance to their account
 app.post("/balance", authMiddleware, async (req, res) => {
-  const { usdAmount } = req.body;
+  const { assetAmount, assetId } = req.body;
   const userId = req.userId;
-  const usdAsset = await prisma.asset.findFirst({
+  const asset = await prisma.asset.findFirst({
     where: {
-      symbol: "USD",
+      id: assetId,
     },
   });
+  const assetSymbol = asset?.symbol;
   // Push the add-balance to redis queue
   const identifier = randomUUID();
+  const loopbackResponsePromise = getLoopbackResponse(identifier);
   await publisherClient.send("LPUSH", [
     "balance",
     JSON.stringify({
       requestType: "add_balance",
       userId,
-      assetId: usdAsset?.id,
-      usdAmount,
+      assetId,
+      assetSymbol,
+      assetAmount,
       identifier,
       queue_id: QUEUE_ID,
     }),
   ]);
 
-  const loopbackResponse = await getLoopbackResponse(identifier);
+  const loopbackResponse = await loopbackResponsePromise;
   res.json({
     message: "Balance Added Successfully",
     identifier,
@@ -197,6 +214,7 @@ app.post("/balance", authMiddleware, async (req, res) => {
 app.get("/balance/usd", authMiddleware, async (req, res) => {
   const userId = req.userId;
   const identifier = randomUUID();
+  const loopbackResponsePromise = getLoopbackResponse(identifier);
   await publisherClient.send("LPUSH", [
     "balance",
     JSON.stringify({
@@ -208,7 +226,7 @@ app.get("/balance/usd", authMiddleware, async (req, res) => {
     }),
   ]);
 
-  const loopbackResponse = await getLoopbackResponse(identifier);
+  const loopbackResponse = await loopbackResponsePromise;
   res.json({
     message: "Balance USD Retrieved Successfully",
     identifier,
@@ -220,6 +238,7 @@ app.get("/balance/usd", authMiddleware, async (req, res) => {
 app.get("/balance", authMiddleware, async (req, res) => {
   const userId = req.userId;
   const identifier = randomUUID();
+  const loopbackResponsePromise = getLoopbackResponse(identifier);
 
   await publisherClient.send("LPUSH", [
     "balance",
@@ -231,7 +250,7 @@ app.get("/balance", authMiddleware, async (req, res) => {
     }),
   ]);
 
-  const loopbackResponse = await getLoopbackResponse(identifier);
+  const loopbackResponse = await loopbackResponsePromise;
   res.json({
     message: "Balance Retrieved Successfully",
     identifier,

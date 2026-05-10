@@ -5,8 +5,8 @@
 
 import { RedisClient } from "bun";
 import type { Balances } from "./types/balances.types";
-import type { Order, OrderBook } from "./types/orderbook.types";
-import { processLimitBuy } from "./matching";
+import type { Order, OrderBook, TradeSide } from "./types/orderbook.types";
+import { processLimitBuy, processLimitSell } from "./matching";
 
 // Define and initiate the clients for pushing and reading from Redis
 const publisherClient = new RedisClient(process.env.REDIS_URL);
@@ -52,29 +52,54 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
   let data = {};
   const identifier = parsedResponse.identifier;
   if (parsedResponse.requestType === "create_order") {
-    const incomingOrder: Order = {
-      orderId: parsedResponse.orderId,
-      userId: parsedResponse.userId,
-      price: parsedResponse.price,
-      quantity: parsedResponse.quantity,
-      filled: 0,
-      tradeSide: parsedResponse.trade_side,
-      createdAt: Date.now(),
-    };
-    const market = parsedResponse.market;
+    try {
+      const tradeSide = String(parsedResponse.trade_side).toUpperCase();
+      if (tradeSide !== "BUY" && tradeSide !== "SELL") {
+        throw new Error("trade_side must be BUY or SELL");
+      }
 
-    // Process the incoming order
-    processLimitBuy(
-      parsedResponse.market_id,
-      incomingOrder,
-      market.baseAssetId,
-      market.quoteAssetId,
-    );
-    data = {
-      requestType: "create_order",
-      identifier: incomingOrder.orderId,
-      orderbook: ORDERBOOK,
-    };
+      const incomingOrder: Order = {
+        orderId: parsedResponse.orderId,
+        userId: parsedResponse.userId,
+        price: parsedResponse.price,
+        quantity: parsedResponse.quantity,
+        filled: 0,
+        tradeSide: tradeSide as TradeSide,
+        createdAt: Date.now(),
+      };
+      const market = parsedResponse.market;
+
+      // Process the incoming order
+      if (incomingOrder.tradeSide === "BUY") {
+        processLimitBuy(
+          parsedResponse.market_id,
+          incomingOrder,
+          market.baseAssetId,
+          market.quoteAssetId,
+        );
+      } else {
+        processLimitSell(
+          parsedResponse.market_id,
+          incomingOrder,
+          market.baseAssetId,
+          market.quoteAssetId,
+        );
+      }
+
+      data = {
+        requestType: "create_order",
+        identifier: incomingOrder.orderId,
+        order: incomingOrder,
+        orderbook: ORDERBOOK[parsedResponse.market_id],
+      };
+    } catch (error) {
+      data = {
+        requestType: "create_order",
+        identifier: parsedResponse.orderId,
+        error:
+          error instanceof Error ? error.message : "Failed to create order",
+      };
+    }
   }
 
   if (parsedResponse.requestType === "get_depth") {
@@ -105,22 +130,22 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
 
   if (parsedResponse.requestType === "add_balance") {
     let finalBalance: number;
-    const { userId, usdAmount, assetId } = parsedResponse;
+    const { userId, assetAmount, assetId } = parsedResponse;
     if (!BALANCES[userId]) BALANCES[userId] = [];
 
     // Check if the user already has a USD balance, and update it if so
     // TODO: Migrate to using the ID of the USD Asset in DB
-    const previousUsdBalance = BALANCES[userId]?.find(
+    const previousBalance = BALANCES[userId]?.find(
       (asset) => asset.assetId === assetId,
     );
-    if (previousUsdBalance) {
-      finalBalance = previousUsdBalance.amount + usdAmount;
-      previousUsdBalance.amount = finalBalance;
+    if (previousBalance) {
+      finalBalance = previousBalance.amount + assetAmount;
+      previousBalance.amount = finalBalance;
     } else {
-      finalBalance = usdAmount;
+      finalBalance = assetAmount;
       BALANCES[userId].push({
         assetId: assetId,
-        amount: usdAmount,
+        amount: finalBalance,
         lockedAmount: 0,
       });
     }

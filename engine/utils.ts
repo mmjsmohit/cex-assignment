@@ -1,20 +1,37 @@
 import { BALANCES } from ".";
 import type { Order } from "./types/orderbook.types";
+
+function getOrCreateAssetBalance(userId: string, assetId: string) {
+  if (!BALANCES[userId]) BALANCES[userId] = [];
+
+  let assetBalance = BALANCES[userId].find((asset) => asset.assetId === assetId);
+  if (!assetBalance) {
+    assetBalance = {
+      assetId,
+      amount: 0,
+      lockedAmount: 0,
+    };
+    BALANCES[userId].push(assetBalance);
+  }
+
+  return assetBalance;
+}
+
 // Utility function for locking balances before an order is placed
 function lockBalances(userId: string, assetId: string, amountToLock: number) {
   const userBalance = BALANCES[userId];
   // Check if the user has enough balance to be locked
 
   const userAsset = userBalance?.find((asset) => {
-    asset.assetId === assetId;
+    return asset.assetId === assetId;
   });
-  if (userAsset?.amount! < amountToLock) {
+  if (!userAsset || userAsset.amount < amountToLock) {
     return false;
   } else {
-    BALANCES[userId]?.map((asset) => {
+    BALANCES[userId]?.forEach((asset) => {
       if (asset.assetId === assetId) {
         asset.amount -= amountToLock;
-        asset.lockedAmount = amountToLock;
+        asset.lockedAmount += amountToLock;
       }
     });
     return true;
@@ -32,25 +49,19 @@ function executeSwap(trade: {
   const { buyerId, sellerId, baseAsset, quoteAsset, qty, price } = trade;
   const totalQuoteValue = qty * price;
 
-  const buyerBalances = BALANCES[buyerId];
-  const sellerBalances = BALANCES[sellerId];
-
-  const buyerBase = buyerBalances?.find((b) => b.assetId === baseAsset)!;
-  const buyerQuote = buyerBalances?.find((b) => b.assetId === quoteAsset)!;
-
-  const sellerBase = sellerBalances?.find((b) => b.assetId === baseAsset)!;
-  const sellerQuote = sellerBalances?.find((b) => b.assetId === quoteAsset)!;
+  const buyerBase = getOrCreateAssetBalance(buyerId, baseAsset);
+  const buyerQuote = getOrCreateAssetBalance(buyerId, quoteAsset);
+  const sellerBase = getOrCreateAssetBalance(sellerId, baseAsset);
+  const sellerQuote = getOrCreateAssetBalance(sellerId, quoteAsset);
 
   // Buyer gets the Base Asset
   buyerBase.amount += qty;
   // Buyer pays Quote Asset from their locked balance
-  buyerQuote.amount -= totalQuoteValue;
   buyerQuote.lockedAmount -= totalQuoteValue;
 
   // Seller gets Quote Asset
   sellerQuote.amount += totalQuoteValue;
   // Seller gives Base Asset from their locked balance (it was locked when they placed the ASK)
-  sellerBase.amount -= qty;
   sellerBase.lockedAmount -= qty;
 
   // TODO: Send an via Redis so the Express backend can write the trade history to db.
@@ -65,4 +76,13 @@ function insertBid(bids: Order[], order: Order) {
   });
 }
 
-export { lockBalances, executeSwap, insertBid };
+function insertAsk(asks: Order[], order: Order) {
+  // Sort ascending by price. If prices are equal, sort by time (oldest first)
+  asks.push(order);
+  asks.sort((a, b) => {
+    if (a.price === b.price) return a.createdAt - b.createdAt;
+    return a.price - b.price;
+  });
+}
+
+export { lockBalances, executeSwap, insertBid, insertAsk };
