@@ -66,6 +66,7 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
         filled: 0,
         tradeSide: tradeSide as TradeSide,
         createdAt: Date.now(),
+        market: parsedResponse.market,
       };
       const market = parsedResponse.market;
 
@@ -133,6 +134,75 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
     } catch (error) {
       data = {
         type: "get_orders",
+        identifier,
+        error: error instanceof Error ? error.message : "Something went wrong",
+      };
+    }
+  }
+
+  if (parsedResponse.requestType === "delete_order") {
+    const { userId, orderId, identifier } = parsedResponse;
+    try {
+      // Obtain the order to be deleted
+      const targetOrder: Order | undefined = Object.entries(ORDERBOOK).map(
+        ([_, orderbook]) =>
+          // Spread all the bids and asks in a single array and filter the required order
+          [...orderbook.bids, ...orderbook.asks].find(
+            (order) => order.userId === userId && order.orderId === orderId,
+          ),
+      )[0];
+
+      if (targetOrder) {
+        // Check the trade side of the order (BUY/SELL)
+        if (targetOrder?.tradeSide == "BUY") {
+          // Since we are cancelling a buy order, we should unlock the quote asset from the user's balance
+          const orderIndex = ORDERBOOK[targetOrder.market.id]?.bids.findIndex(
+            (order) => order.orderId === targetOrder.orderId,
+          );
+          if (orderIndex != undefined) {
+            ORDERBOOK[targetOrder.market.id]?.bids.splice(orderIndex, 1);
+          }
+
+          // Unlock the locked quote asset of the user
+          const quoteAssetBalance = BALANCES[userId]?.find(
+            (asset) => asset.assetId === targetOrder.market.quoteAssetId,
+          );
+          if (quoteAssetBalance) {
+            quoteAssetBalance.amount += quoteAssetBalance?.lockedAmount;
+            quoteAssetBalance.lockedAmount = 0;
+          }
+        } else {
+          // Since we are cancelling a buy order, we should unlock the quote asset from the user's balance
+          const orderIndex = ORDERBOOK[targetOrder.market.id]?.bids.findIndex(
+            (order) => order.orderId === targetOrder.orderId,
+          );
+          if (orderIndex != undefined) {
+            ORDERBOOK[targetOrder.market.id]?.bids.splice(orderIndex, 1);
+          }
+
+          // Unlock the locked quote asset of the user
+          const baseAssetBalance = BALANCES[userId]?.find(
+            (asset) => asset.assetId === targetOrder.market.baseAssetId,
+          );
+          if (baseAssetBalance) {
+            baseAssetBalance.amount += baseAssetBalance?.lockedAmount;
+            baseAssetBalance.lockedAmount = 0;
+          }
+        }
+
+        data = {
+          type: "delete_orders",
+          identifier,
+          message: "Order deleted successfully and balance has been updated",
+        };
+      } else {
+        throw Error(
+          "Order not found or you do not have the permission to delete this order",
+        );
+      }
+    } catch (error) {
+      data = {
+        type: "delete_orders",
         identifier,
         error: error instanceof Error ? error.message : "Something went wrong",
       };

@@ -208,7 +208,30 @@ app.get("/order/:orderId", authMiddleware, async (req, res) => {
 });
 
 // Delete an order from the orderbook if it is not filled or is partially filled
-app.delete("/order/:orderId", (req, res) => {});
+app.delete("/order/:orderId", authMiddleware, async (req, res) => {
+  const userId = req.userId;
+  const orderId = req.params.orderId;
+
+  const requestId = randomUUID();
+  const loopbackResponsePromise = getLoopbackResponse(requestId);
+  await publisherClient.send("LPUSH", [
+    "incoming-orders",
+    JSON.stringify({
+      identifier: requestId,
+      userId,
+      orderId,
+      requestType: "delete_order",
+      queue_id: QUEUE_ID,
+    }),
+  ]);
+
+  const loopbackResponse = await loopbackResponsePromise;
+  res.status(200).json({
+    message: "Order fetched successfully",
+    requestId,
+    loopbackResponse,
+  });
+});
 
 // Get the orderbook depth for a given symbol, e.g., SOL/USD
 app.get("/depth/:symbol", (req, res) => {});

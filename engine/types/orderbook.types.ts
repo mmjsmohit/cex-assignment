@@ -3,6 +3,13 @@ type MarketId = string;
 export type TradeSide = "BUY" | "SELL";
 export type OrderType = "LIMIT" | "MARKET";
 
+interface Market {
+  id: string;
+  name: string;
+  baseAssetId: string;
+  quoteAssetId: string;
+}
+
 interface Order {
   orderId: string;
   userId: string;
@@ -11,6 +18,7 @@ interface Order {
   filled: number;
   tradeSide: TradeSide;
   createdAt: number;
+  market: Market;
 }
 
 interface AssetOrderBook {
@@ -21,4 +29,4 @@ interface AssetOrderBook {
 
 type OrderBook = Record<MarketId, AssetOrderBook>;
 
-export type { OrderBook, Order, MarketId, AssetOrderBook };
+export type { OrderBook, Order, MarketId, AssetOrderBook, Market };
