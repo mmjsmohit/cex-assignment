@@ -278,12 +278,12 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
   }
 
   if (parsedResponse.requestType === "get_balance") {
-    const { userId } = parsedResponse;
+    const { userId, identifier } = parsedResponse;
     const balance = BALANCES[userId];
     data = {
       type: "get_balance",
       userId,
-      balance,
+      balance: balance,
       identifier,
     };
   }
