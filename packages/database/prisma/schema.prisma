@@ -32,15 +32,16 @@ enum OrderStatus {
 }
 
 model User {
-  id                String             @id @default(uuid())
-  name              String
-  username          String
-  password          String
+  id       String @id @default(uuid())
+  name     String
+  username String
+  password String
   // fiatBalance       Float ---> Would be stored in memory
   // lockedFiat        Float ---> Would be stored in memory
-  fills             Fills[]
-  orderHistories    OrderHistory[]
+
   userAssetBalances userAssetBalance[]
+  orderHistories    OrderHistory[]
+  fills             Fills[]
 }
 
 model Asset {
@@ -48,21 +49,19 @@ model Asset {
   name              String
   symbol            String
   logo              String
-  fills             Fills[]
-  orderHistories    OrderHistory[]
   userAssetBalances userAssetBalance[]
   baseMarkets       Market[]           @relation("BaseAsset")
   quoteMarkets      Market[]           @relation("QuoteAsset")
 }
 
 model Market {
-  id           String @id @default(uuid())
-  name         String
-  baseAssetId  String
-  quoteAssetId String
-
-  baseAsset  Asset? @relation("BaseAsset", fields: [baseAssetId], references: [id])
-  quoteAsset Asset? @relation("QuoteAsset", fields: [quoteAssetId], references: [id])
+  id             String         @id @default(uuid())
+  name           String
+  baseAssetId    String
+  quoteAssetId   String
+  baseAsset      Asset?         @relation("BaseAsset", fields: [baseAssetId], references: [id])
+  quoteAsset     Asset?         @relation("QuoteAsset", fields: [quoteAssetId], references: [id])
+  orderHistories OrderHistory[]
 }
 
 model userAssetBalance {
@@ -77,31 +76,29 @@ model userAssetBalance {
 // The intended orders of the user
 model OrderHistory {
   id        String      @id @default(uuid())
-  user      User        @relation(fields: [userId], references: [id])
-  asset     Asset       @relation(fields: [assetsId], references: [id])
   amount    Float
   price     Float
   type      OrderType
   side      TradeSide
   userId    String
-  assetsId  String
+  marketId  String
   fills     Fills[]
   status    OrderStatus
   timestamp DateTime    @default(now())
+  user      User        @relation(fields: [userId], references: [id])
+  market    Market      @relation(fields: [marketId], references: [id])
 }
 
 // The actual fills done in the market for a particular order placed by the user
 model Fills {
   id              String       @id @default(uuid())
   user            User         @relation(fields: [userId], references: [id])
-  asset           Asset        @relation(fields: [assetsId], references: [id])
   amount          Float
   price           Float
   type            OrderType
   side            TradeSide
   liquidType      LiquidType
   userId          String
-  assetsId        String
   originalOrder   OrderHistory @relation(fields: [originalOrderId], references: [id])
   originalOrderId String
   fee             Float

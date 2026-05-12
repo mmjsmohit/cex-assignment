@@ -2,6 +2,7 @@ type MarketId = string;
 
 export type TradeSide = "BUY" | "SELL";
 export type OrderType = "LIMIT" | "MARKET";
+export type OrderCompletion = "COMPLETED" | "PARTIAL" | "CANCELLED";
 
 interface Market {
   id: string;
