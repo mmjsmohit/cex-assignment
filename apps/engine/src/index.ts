@@ -7,6 +7,7 @@ import { RedisClient } from "bun";
 import type { Balances } from "./types/balances.types";
 import type { Order, OrderBook, TradeSide } from "./types/orderbook.types";
 import { processLimitBuy, processLimitSell } from "./matching";
+import { getMarketDepth } from "./depth";
 
 // Define and initiate the clients for pushing and reading from Redis
 const publisherClient = new RedisClient(process.env.REDIS_URL);
@@ -114,6 +115,30 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
   }
 
   if (parsedResponse.requestType === "get_depth") {
+    const { marketId, identifier } = parsedResponse;
+
+    try {
+      if (ORDERBOOK[marketId]) {
+        const depthData = getMarketDepth(ORDERBOOK[marketId]);
+        data = {
+          type: "get_depth",
+          identifier,
+          depth: depthData,
+        };
+      } else {
+        data = {
+          type: "get_depth",
+          identifier,
+          error: "Market not found",
+        };
+      }
+    } catch (e) {
+      data = {
+        type: "get_depth",
+        identifier,
+        error: e instanceof Error ? e.message : "Failed to get depth",
+      };
+    }
   }
 
   if (parsedResponse.requestType === "get_order") {

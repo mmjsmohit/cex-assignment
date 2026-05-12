@@ -1,6 +1,6 @@
 import express from "express";
 import type { Request, Response } from "express";
-import { prisma } from "@repo/db";
+import { OrderStatus, prisma } from "@repo/db";
 import bcrypt from "bcrypt";
 import jsonwebtoken from "jsonwebtoken";
 import authMiddleware from "./middleware";
@@ -234,13 +234,62 @@ app.delete("/order/:orderId", authMiddleware, async (req, res) => {
 });
 
 // Get the orderbook depth for a given symbol, e.g., SOL/USD
-app.get("/depth/:symbol", (req, res) => {});
+app.get("/depth/:marketId", async (req, res) => {
+  const marketId = req.params.marketId;
+
+  const requestId = randomUUID();
+  const loopbackResponsePromise = getLoopbackResponse(requestId);
+  // TODO: Probably start using different queues for different tasks
+  await publisherClient.send("LPUSH", [
+    "incoming-orders",
+    JSON.stringify({
+      identifier: requestId,
+      marketId,
+      requestType: "get_depth",
+      queue_id: QUEUE_ID,
+    }),
+  ]);
+
+  const loopbackResponse = await loopbackResponsePromise;
+  res.status(200).json({
+    message: "Depth fetched successfully",
+    requestId,
+    loopbackResponse,
+  });
+});
 
 // Get all open orders for the user
-app.get("/orders/open", (req, res) => {});
+app.get("/orders/open", authMiddleware, async (req, res) => {
+  const userId = req.userId;
+
+  const openOrders = await prisma.orderHistory.findMany({
+    where: {
+      userId: userId,
+      status: OrderStatus.OPEN,
+    },
+    include: {
+      market: true,
+    },
+  });
+  res.status(200).json({
+    message: "Open orders fetched successfully",
+    openOrders,
+  });
+});
 
 // Get all fills for the user
-app.get("/fills", (req, res) => {});
+app.get("/fills", authMiddleware, async (req, res) => {
+  const userId = req.userId;
+  const fills = await prisma.fills.findMany({
+    where: {
+      userId: userId,
+    },
+  });
+  res.status(200).json({
+    message: "Fills fetched successfully",
+    fills,
+  });
+});
 
 // Allows the user to add balance to their account
 app.post("/balance", authMiddleware, async (req, res) => {
