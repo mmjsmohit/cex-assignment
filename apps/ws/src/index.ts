@@ -9,7 +9,15 @@ async function* listenToOrderUpdates() {
   while (true) {
     try {
       const result = await redis.brpop("order-updates", 0);
-      const parsedResult = JSON.parse(result?.[1]!);
+      if (!result || result[1] == null) {
+        console.warn("brpop returned null, retrying...");
+        continue;
+      }
+      console.log(
+        `WS rcvd an order update on process ${process.pid}: `,
+        result,
+      );
+      const parsedResult = JSON.parse(result[1]);
       yield parsedResult;
     } catch (err) {
       console.error("Redis listener error:", err);
@@ -42,6 +50,12 @@ const server = Bun.serve<WebSocketData>({
       // When a connection is opened, map the ws to the market and store it
       console.log(`Connected to ${marketId}`);
       ws.subscribe(marketId);
+
+      // Send the user the current depth of the market when they connect initially
+      const depth = await fetch(`${process.env.BACKEND_URL}/depth/${marketId}`);
+      const depthData = await depth.json();
+      console.log("here");
+      ws.send(JSON.stringify(depthData));
     },
     message(ws, message) {
       console.log(message);
