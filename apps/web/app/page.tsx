@@ -57,7 +57,7 @@ type OrderOption = {
 };
 
 const tokenStorageKey = "cex-debug-jwt";
-const defaultWsUrl = "ws://localhost:4000";
+const defaultWsUrl = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
 
 const initialFields = {
   auth: {
