@@ -69,6 +69,7 @@ export function processPerpLimitBuy(incomingOrder: PerpOrder) {
 
     // 3. Match the Long and Short (The Swap)
     matchPerpSwap({
+      orderId: incomingOrder.orderId,
       longerId: incomingOrder.userId,
       shorterId: bestAsk!.userId,
       qty: matchQty,
@@ -225,6 +226,7 @@ export function processPerpLimitSell(incomingOrder: PerpOrder) {
 
     // 4. Match the Long and Short (The Swap)
     matchPerpSwap({
+      orderId: incomingOrder.orderId,
       longerId: bestBid!.userId,
       shorterId: incomingOrder.userId,
       qty: matchQty,

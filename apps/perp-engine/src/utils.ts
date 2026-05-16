@@ -1,4 +1,5 @@
 import { COLLATERALS, PERP_POSITIONS } from ".";
+import { processPerpLimitBuy, processPerpLimitSell } from "./perpMatching";
 
 import type {
   Market,
@@ -6,6 +7,8 @@ import type {
   PerpOrder,
   TradeSide,
 } from "./types/orderbook.types";
+
+import type { Position } from "./types/positions.types";
 import { randomUUID } from "crypto";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000";
@@ -103,6 +106,7 @@ export function releaseLockedCollateral(
 }
 
 export function matchPerpSwap(trade: {
+  orderId: string;
   longerId: string;
   shorterId: string;
   qty: number;
@@ -113,6 +117,7 @@ export function matchPerpSwap(trade: {
   shorterLeverage: number;
 }) {
   const {
+    orderId,
     longerId,
     shorterId,
     qty,
@@ -136,6 +141,7 @@ export function matchPerpSwap(trade: {
   const shorterLiquidationPrice = entryPrice * (1 + 1 / shorterLeverage);
 
   upsertPosition({
+    orderId,
     userId: longerId,
     market,
     tradeSide: "LONG",
@@ -146,6 +152,7 @@ export function matchPerpSwap(trade: {
   });
 
   upsertPosition({
+    orderId,
     userId: shorterId,
     market,
     tradeSide: "SHORT",
@@ -206,8 +213,10 @@ function upsertPosition({
   margin,
   price,
   liquidationPrice,
+  orderId,
 }: {
   userId: string;
+  orderId: string;
   market: Market;
   tradeSide: TradeSide;
   qty: number;
@@ -237,6 +246,8 @@ function upsertPosition({
       averagePrice: price,
       liquidationPrice,
       entryPrice: price,
+      orderId: orderId,
+      upnl: 0, // Every position starts with 0 P/L until the next price update comes in.
     });
     return;
   }
@@ -265,5 +276,34 @@ export function insertAsk(asks: PerpOrder[], order: PerpOrder) {
   asks.sort((a, b) => {
     if (a.entryPrice === b.entryPrice) return a.createdAt - b.createdAt;
     return a.entryPrice! - b.entryPrice!;
+  });
+}
+
+export function liquidatePositions(
+  positions: Position[],
+  currentPrice: number,
+) {
+  positions.forEach((position) => {
+    // Build an opposing incomingOrder based on the position details (LONG -> LIMIT SHORT, SHORT -> LIMIT LONG)
+    const opposingOrder: PerpOrder = {
+      userId: position.userId,
+      orderId: position.orderId,
+      market: position.market,
+      entryPrice: currentPrice,
+      quantity: position.quantity,
+      margin: position.margin,
+      filled: 0,
+      orderType: "LIMIT",
+      tradeSide: position.tradeSide === "LONG" ? "SHORT" : "LONG",
+      createdAt: Date.now(),
+      fills: [],
+      leverage: 1,
+    };
+    // Process this opposing order as normal
+    if (opposingOrder.tradeSide === "LONG") {
+      processPerpLimitBuy(opposingOrder);
+    } else {
+      processPerpLimitSell(opposingOrder);
+    }
   });
 }

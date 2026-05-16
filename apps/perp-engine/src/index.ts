@@ -24,7 +24,11 @@ import type {
 } from "./types/orderbook.types";
 import type { bookTick } from "./types/tick.types";
 import type { Position } from "./types/positions.types";
-import { getOrCreatePositions, waitForBackend } from "./utils";
+import {
+  getOrCreatePositions,
+  liquidatePositions,
+  waitForBackend,
+} from "./utils";
 import { processPerpLimitBuy, processPerpLimitSell } from "./perpMatching";
 
 // Define and initiate the clients for pushing and reading from Redis
@@ -100,7 +104,28 @@ exchangeSocket.addEventListener("message", (event) => {
   // Update the index price of the market in the orderbook
   PERP_ORDERBOOK[marketId!]!.indexPrice = price;
 
-  // Look for liquidity in the orderbook and execute the trades if possible
+  // Loop through the positions of this market and calculate the unrealized PnL for each position and check if any position needs to be liquidated
+  const needLiquidation: Position[] = [];
+  const marketPositions = PERP_POSITIONS[marketId!];
+
+  marketPositions?.forEach((position, idx) => {
+    let pnl: number = 0;
+
+    // Calculate PnL depending upon if the position is LONG or SHORT
+    if (position.tradeSide === "LONG") {
+      pnl = position.quantity * (price - position.entryPrice);
+    } else {
+      pnl = position.quantity * (position.entryPrice - price);
+    }
+
+    // Mark this position for liquidation
+    if (pnl === -1 * position.margin) {
+      needLiquidation.push(marketPositions[idx]!);
+    }
+  });
+
+  // Look for liquidity in the needLiquidation[] and execute the trades
+  liquidatePositions(needLiquidation, price);
 });
 
 async function* incomingMessageStream(subscribingClient: RedisClient) {
