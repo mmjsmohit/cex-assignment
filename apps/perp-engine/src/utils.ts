@@ -1,15 +1,21 @@
 import { COLLATERALS, PERP_POSITIONS } from ".";
 import { processPerpLimitBuy, processPerpLimitSell } from "./perpMatching";
+import { randomUUID } from "crypto";
 
 import type {
   Market,
   OrderType,
+  PerpAssetOrderBook,
   PerpOrder,
   TradeSide,
 } from "./types/orderbook.types";
 
 import type { Position } from "./types/positions.types";
-import { randomUUID } from "crypto";
+interface DepthLevel {
+  price: number;
+  quantity: number;
+  total: number; // Sum of quantity
+}
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000";
 const MOCK_EXCHANGE_HEALTH_URL =
@@ -305,26 +311,125 @@ export function liquidatePositions(
   currentPrice: number,
 ) {
   positions.forEach((position) => {
-    // Build an opposing incomingOrder based on the position details (LONG -> LIMIT SHORT, SHORT -> LIMIT LONG)
-    const opposingOrder: PerpOrder = {
+    const marketId = position.market.id;
+    const marketPositions = PERP_POSITIONS[marketId];
+    if (!marketPositions) return;
+
+    // 1. Remove the liquidated position from PERP_POSITIONS.
+    //    The loser's margin was already consumed (via consumeLockedCollateral) when the
+    //    position was opened — nothing further to deduct from their collateral.
+    const positionIndex = marketPositions.findIndex(
+      (p) => p.positionId === position.positionId,
+    );
+    if (positionIndex !== -1) {
+      marketPositions.splice(positionIndex, 1);
+    }
+    // 2. Try to close the position using liquidity already present in the orderbook
+    const opposingSide = position.tradeSide === "LONG" ? "SHORT" : "LONG";
+    const liquidationOrder: PerpOrder = {
       userId: position.userId,
-      orderId: position.orderId,
+      orderId: randomUUID(),
       market: position.market,
       entryPrice: currentPrice,
       quantity: position.quantity,
       margin: position.margin,
       filled: 0,
       orderType: "LIMIT",
-      tradeSide: position.tradeSide === "LONG" ? "SHORT" : "LONG",
+      tradeSide: opposingSide,
       createdAt: Date.now(),
       fills: [],
       leverage: 1,
     };
-    // Process this opposing order as normal
-    if (opposingOrder.tradeSide === "LONG") {
-      processPerpLimitBuy(opposingOrder);
+
+    // Process the opposing order through the matching engine
+    if (opposingSide === "LONG") {
+      processPerpLimitBuy(liquidationOrder);
     } else {
-      processPerpLimitSell(opposingOrder);
+      processPerpLimitSell(liquidationOrder);
+    }
+
+    // 3. Check if the order was filled via orderbook liquidity
+    if (liquidationOrder.filled >= liquidationOrder.quantity) {
+      // Fully filled via orderbook — no ADL needed
+      console.log(
+        `[liquidatePositions] Position ${position.positionId} closed via orderbook liquidity`,
+      );
+      return;
+    }
+
+    // 4. ADL fallback: No (or partial) liquidity — forcibly close the counterpart position.
+    //    Find the counterpart (winning) position — same original orderId, opposite side.
+    const counterpartSide = position.tradeSide === "LONG" ? "SHORT" : "LONG";
+    const counterpartPosition = marketPositions.find(
+      (p) => p.orderId === position.orderId && p.tradeSide === counterpartSide,
+    );
+
+    if (!counterpartPosition) {
+      console.warn(
+        `[liquidatePositions] No counterpart found for liquidated position ${position.positionId}`,
+      );
+      return;
+    }
+
+    // 5. Remove the counterpart (winning) position — both sides are now closed.
+    const counterpartIndex = marketPositions.findIndex(
+      (p) => p.positionId === counterpartPosition.positionId,
+    );
+    if (counterpartIndex !== -1) {
+      marketPositions.splice(counterpartIndex, 1);
+    }
+
+    // 6. Credit the winner.
+    //    Their margin was consumed at open, so we return it here along with their profit.
+    //    The profit is funded by the loser's forfeited margin.
+    const winnerCollateral = COLLATERALS[counterpartPosition.userId]?.find(
+      (c) => c.marketId === marketId,
+    );
+    if (winnerCollateral) {
+      winnerCollateral.amount +=
+        counterpartPosition.margin + counterpartPosition.upnl;
+    } else {
+      console.warn(
+        `[liquidatePositions] No collateral record found for winner ${counterpartPosition.userId}`,
+      );
     }
   });
+}
+
+export function getMarketDepth(perpOrderBook: PerpAssetOrderBook) {
+  // Bring bids into one map
+  const bidMap: Record<number, number> = {};
+  perpOrderBook.bids.forEach((order) => {
+    const remaining = order.quantity - order.filled;
+    bidMap[order.entryPrice!] = (bidMap[order.entryPrice!] || 0) + remaining;
+  });
+
+  // Bring asks into one map
+  const askMap: Record<number, number> = {};
+  perpOrderBook.asks.forEach((order) => {
+    const remaining = order.quantity - order.filled;
+    askMap[order.entryPrice!] = (askMap[order.entryPrice!] || 0) + remaining;
+  });
+
+  // Sort and accumulate bids (high to low)
+  let bidTotal = 0;
+  const bids: DepthLevel[] = Object.keys(bidMap)
+    .map(Number)
+    .sort((a, b) => b - a)
+    .map((price) => {
+      bidTotal += bidMap[price]!;
+      return { price, quantity: bidMap[price] ?? 0, total: bidTotal };
+    });
+
+  // 4. Sort and Accumulate Asks (Low to High)
+  let askTotal = 0;
+  const asks: DepthLevel[] = Object.keys(askMap)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((price) => {
+      askTotal += askMap[price]!;
+      return { price, quantity: askMap[price] ?? 0, total: askTotal };
+    });
+
+  return { bids, asks };
 }

@@ -9,6 +9,8 @@ import getLoopbackResponse from "./loopbackResponse";
 import { QUEUE_ID } from "./loopbackResponse";
 import { randomUUID } from "crypto";
 
+type MarketType = "SPOT" | "PERP";
+
 const JWT_SECRET = process.env.JWT_SECRET;
 const publisherClient = new RedisClient(process.env.REDIS_URL);
 
@@ -196,19 +198,32 @@ app.post("/order", authMiddleware, async (req, res) => {
 // Get all orders for the user
 app.get("/orders", authMiddleware, async (req, res) => {
   const userId = req.userId;
+  const marketType: MarketType = req.body.marketType;
   let requestId = randomUUID();
 
   const loopbackResponsePromise = getLoopbackResponse(requestId);
 
-  await publisherClient.send("LPUSH", [
-    "incoming-orders",
-    JSON.stringify({
-      userId,
-      identifier: requestId,
-      requestType: "get_all_orders",
-      queue_id: QUEUE_ID,
-    }),
-  ]);
+  if (marketType === "SPOT") {
+    await publisherClient.send("LPUSH", [
+      "incoming-orders",
+      JSON.stringify({
+        userId,
+        identifier: requestId,
+        requestType: "get_all_orders",
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  } else {
+    await publisherClient.send("LPUSH", [
+      "perp-incoming-orders",
+      JSON.stringify({
+        userId,
+        identifier: requestId,
+        requestType: "get_all_orders",
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  }
   const loopbackResponse = await loopbackResponsePromise;
   res.json({
     message: "Order Pushed to Queue Successfully",
@@ -223,19 +238,37 @@ app.get("/orders", authMiddleware, async (req, res) => {
 app.get("/order/:orderId", authMiddleware, async (req, res) => {
   const userId = req.userId;
   const orderId = req.params.orderId;
+  const {
+    marketType,
+  }: {
+    marketType: MarketType;
+  } = req.body;
 
   const requestId = randomUUID();
   const loopbackResponsePromise = getLoopbackResponse(requestId);
-  await publisherClient.send("LPUSH", [
-    "incoming-orders",
-    JSON.stringify({
-      identifier: requestId,
-      userId,
-      orderId,
-      requestType: "get_order",
-      queue_id: QUEUE_ID,
-    }),
-  ]);
+  if (marketType === "SPOT") {
+    await publisherClient.send("LPUSH", [
+      "incoming-orders",
+      JSON.stringify({
+        identifier: requestId,
+        userId,
+        orderId,
+        requestType: "get_order",
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  } else {
+    await publisherClient.send("LPUSH", [
+      "perp-incoming-orders",
+      JSON.stringify({
+        identifier: requestId,
+        userId,
+        orderId,
+        requestType: "get_order",
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  }
 
   const loopbackResponse = await loopbackResponsePromise;
   res.status(200).json({
@@ -249,19 +282,35 @@ app.get("/order/:orderId", authMiddleware, async (req, res) => {
 app.delete("/order/:orderId", authMiddleware, async (req, res) => {
   const userId = req.userId;
   const orderId = req.params.orderId;
+  const { market_type } = req.body;
 
   const requestId = randomUUID();
   const loopbackResponsePromise = getLoopbackResponse(requestId);
-  await publisherClient.send("LPUSH", [
-    "incoming-orders",
-    JSON.stringify({
-      identifier: requestId,
-      userId,
-      orderId,
-      requestType: "delete_order",
-      queue_id: QUEUE_ID,
-    }),
-  ]);
+  if (market_type === "PERP") {
+    await publisherClient.send("LPUSH", [
+      "perp-incoming-orders",
+      JSON.stringify({
+        identifier: requestId,
+        userId,
+        orderId,
+        requestType: "delete_order",
+        market_type,
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  } else {
+    await publisherClient.send("LPUSH", [
+      "incoming-orders",
+      JSON.stringify({
+        identifier: requestId,
+        userId,
+        orderId,
+        requestType: "delete_order",
+        market_type,
+        queue_id: QUEUE_ID,
+      }),
+    ]);
+  }
 
   const loopbackResponse = await loopbackResponsePromise;
   res.status(200).json({
@@ -274,19 +323,38 @@ app.delete("/order/:orderId", authMiddleware, async (req, res) => {
 // Get the orderbook depth for a given symbol, e.g., SOL/USD
 app.get("/depth/:marketId", async (req, res) => {
   const marketId = req.params.marketId;
+  const {
+    marketType,
+  }: {
+    marketType: MarketType;
+  } = req.body;
 
   const requestId = randomUUID();
   const loopbackResponsePromise = getLoopbackResponse(requestId);
   // TODO: Probably start using different queues for different tasks
-  await publisherClient.send("LPUSH", [
-    "incoming-orders",
-    JSON.stringify({
-      identifier: requestId,
-      marketId,
-      requestType: "get_depth",
-      queue_id: QUEUE_ID,
-    }),
-  ]);
+
+  marketType === "SPOT"
+    ? await publisherClient.send("LPUSH", [
+        "incoming-orders",
+        JSON.stringify({
+          identifier: requestId,
+          marketId,
+          requestType: "get_depth",
+          queue_id: QUEUE_ID,
+        }),
+      ])
+    : await publisherClient.send("LPUSH", [
+        "perp-incoming-orders",
+        JSON.stringify({
+          identifier: requestId,
+          marketId,
+          requestType: "get_depth",
+          queue_id: QUEUE_ID,
+        }),
+      ]);
+  console.log(
+    `Depth request sent to queue with id: ${requestId} for market ${marketId} and market type ${marketType}`,
+  );
 
   const loopbackResponse = await loopbackResponsePromise;
   res.status(200).json({

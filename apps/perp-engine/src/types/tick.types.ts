@@ -9,7 +9,7 @@ interface bookTick {
     b: string; // Inside bid price
     e: string; // Event type
     s: string; // Symbol (Market)
-    u: number; // Update ID
+    u: string | number; // Update ID
   };
 }
 

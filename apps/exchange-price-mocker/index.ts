@@ -159,34 +159,33 @@ async function handleForwardPrice(req: Request) {
   const nowInMicroseconds = Date.now() * 1000;
 
   const update = {
-    type: "price_update",
-    marketId,
-    price,
     stream: `bookTicker.${marketId}`,
     data: {
-      A: "0",
-      B: "0",
-      E: nowInMicroseconds,
-      T: nowInMicroseconds,
-      a: String(price),
-      b: String(price),
       e: "bookTicker",
+      E: nowInMicroseconds,
       s: marketId,
-      u: nowInMicroseconds,
-      marketId,
-      price,
+      a: String(price),
+      A: "0",
+      b: String(price),
+      B: "0",
+      u: String(nowInMicroseconds),
+      T: nowInMicroseconds,
     },
   };
 
   const serializedUpdate = JSON.stringify(update);
+  let forwardedTo = 0;
 
   for (const client of connectedClients) {
-    client.send(serializedUpdate);
+    if (client.data.subscribedStreams.has(update.stream)) {
+      client.send(serializedUpdate);
+      forwardedTo += 1;
+    }
   }
 
   return jsonResponse({
     ok: true,
-    forwardedTo: connectedClients.size,
+    forwardedTo,
     update,
   });
 }

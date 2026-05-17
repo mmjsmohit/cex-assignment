@@ -3,8 +3,7 @@
 // The engine handles creating orders, sending depth (ordersbook as a whole), user balances by receiving them from the
 // redis queue and returning the response into another queue.
 
-import { RedisClient, sleep } from "bun";
-import type { WebSocket } from "bun";
+import { RedisClient } from "bun";
 
 // import {
 //   processLimitBuy,
@@ -25,6 +24,7 @@ import type {
 import type { bookTick } from "./types/tick.types";
 import type { Position } from "./types/positions.types";
 import {
+  getMarketDepth,
   getOrCreatePositions,
   liquidatePositions,
   waitForBackend,
@@ -147,19 +147,25 @@ exchangeSocket.addEventListener("message", (event) => {
 
     // Calculate PnL depending upon if the position is LONG or SHORT
     if (position.tradeSide === "LONG") {
+      // Update the PnL for the position in the global PERP_POSITIONS object
       pnl = position.quantity * (price - position.entryPrice);
+      marketPositions[idx]!.upnl = pnl;
     } else {
       pnl = position.quantity * (position.entryPrice - price);
+      marketPositions[idx]!.upnl = pnl;
     }
 
     // Mark this position for liquidation
-    if (pnl === -1 * position.margin) {
+    if (price === position.liquidationPrice) {
       needLiquidation.push(marketPositions[idx]!);
     }
   });
 
+  console.log("POSITIONS IN NEED OF LIQUIDATION", needLiquidation);
   // Look for liquidity in the needLiquidation[] and execute the trades
   liquidatePositions(needLiquidation, price);
+  console.log("POSITIONS FOR THIS MARKET\n", PERP_POSITIONS[marketId]);
+  console.log("ORDERBOOK FOR THIS MARKET\n", PERP_ORDERBOOK[marketId]);
 });
 
 async function* incomingMessageStream(subscribingClient: RedisClient) {
@@ -250,6 +256,76 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
     }
   }
 
+  if (parsedResponse.requestType === "delete_order") {
+    const { userId, orderId, identifier } = parsedResponse;
+    try {
+      // Obtain the order to be deleted
+      const targetOrder: PerpOrder | undefined = Object.entries(
+        PERP_ORDERBOOK,
+      ).map(([_, orderbook]) =>
+        // Spread all the bids and asks in a single array and filter the required order
+        [...orderbook.bids, ...orderbook.asks].find(
+          (order) => order.userId === userId && order.orderId === orderId,
+        ),
+      )[0];
+
+      if (targetOrder) {
+        // Check the trade side of the order (LONG/SHORT)
+        if (targetOrder.tradeSide === "LONG") {
+          // Since we are cancelling a futures order, we should unlock the margin and send it to the user's collateral balance
+          const orderIndex = PERP_ORDERBOOK[
+            targetOrder.market.id
+          ]?.bids.findIndex((order) => order.orderId === targetOrder.orderId);
+          if (orderIndex != undefined) {
+            PERP_ORDERBOOK[targetOrder.market.id]?.bids.splice(orderIndex, 1);
+          }
+
+          // Unlock the locked quote asset of the user
+          const collateralBalance = COLLATERALS[userId]?.find(
+            (collateral) => collateral.marketId === targetOrder.orderId,
+          );
+          if (collateralBalance) {
+            collateralBalance.amount += collateralBalance?.lockedAmount;
+            collateralBalance.lockedAmount = 0;
+          }
+        } else {
+          // Since we are cancelling a futures order, we should unlock the margin and send it to the user's collateral balance
+          const orderIndex = PERP_ORDERBOOK[
+            targetOrder.market.id
+          ]?.asks.findIndex((order) => order.orderId === targetOrder.orderId);
+          if (orderIndex != undefined) {
+            PERP_ORDERBOOK[targetOrder.market.id]?.asks.splice(orderIndex, 1);
+          }
+
+          // Unlock the locked quote asset of the user
+          const collateralBalance = COLLATERALS[userId]?.find(
+            (collateral) => collateral.marketId === targetOrder.orderId,
+          );
+          if (collateralBalance) {
+            collateralBalance.amount += collateralBalance?.lockedAmount;
+            collateralBalance.lockedAmount = 0;
+          }
+        }
+
+        data = {
+          type: "delete_orders",
+          identifier,
+          message: "Order deleted successfully and balance has been updated",
+        };
+      } else {
+        throw Error(
+          "Order not found or you do not have the permission to delete this order",
+        );
+      }
+    } catch (error) {
+      data = {
+        type: "delete_orders",
+        identifier,
+        error: error instanceof Error ? error.message : "Something went wrong",
+      };
+    }
+  }
+
   if (parsedResponse.requestType === "add_collateral") {
     let finalBalance: number;
     const { userId, marketId, amount } = parsedResponse;
@@ -277,12 +353,14 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
       userId,
       marketId,
       finalBalance,
+      collaterals: COLLATERALS[userId],
       identifier,
     };
   }
 
   if (parsedResponse.requestType === "get_available_equity") {
     // Map through all the markets and find out the collaterals for the user
+    console.log("COLLATERALS is: ", COLLATERALS);
     const { userId } = parsedResponse;
     data = {
       type: "get_available_equity",
@@ -292,57 +370,55 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
     };
   }
 
-  // if (parsedResponse.requestType === "get_depth") {
-  //   const { marketId, identifier } = parsedResponse;
+  if (parsedResponse.requestType === "get_depth") {
+    const { marketId, identifier } = parsedResponse;
 
-  //   try {
-  //     if (ORDERBOOK[marketId]) {
-  //       const depthData = getMarketDepth(ORDERBOOK[marketId]);
-  //       data = {
-  //         type: "get_depth",
-  //         identifier,
-  //         depth: depthData,
-  //       };
-  //     } else {
-  //       data = {
-  //         type: "get_depth",
-  //         identifier,
-  //         error: "Market not found",
-  //       };
-  //     }
-  //   } catch (e) {
-  //     data = {
-  //       type: "get_depth",
-  //       identifier,
-  //       error: e instanceof Error ? e.message : "Failed to get depth",
-  //     };
-  //   }
-  // }
+    try {
+      if (PERP_ORDERBOOK[marketId]) {
+        const depthData = getMarketDepth(PERP_ORDERBOOK[marketId]);
+        data = {
+          type: "get_depth",
+          identifier,
+          depth: depthData,
+          lastTradedPrice: PERP_ORDERBOOK[marketId].lastTradedPrice,
+          indexPrice: PERP_ORDERBOOK[marketId].indexPrice,
+        };
+      } else {
+        data = {
+          type: "get_depth",
+          identifier,
+          error: "Market not found",
+        };
+      }
+    } catch (e) {
+      data = {
+        type: "get_depth",
+        identifier,
+        error: e instanceof Error ? e.message : "Failed to get depth",
+      };
+    }
+  }
 
-  // if (parsedResponse.requestType === "get_order") {
-  //   const { userId, orderId, identifier } = parsedResponse;
-  //   try {
-  //     const userOrder = Object.entries(ORDERBOOK).map(([_, orderbook]) => {
-  //       const order = [...orderbook.bids, ...orderbook.asks].filter(
-  //         (order) => order.userId === userId && order.orderId === orderId,
-  //       );
-  //       return {
-  //         order,
-  //       };
-  //     });
-  //     data = {
-  //       type: "get_order",
-  //       identifier,
-  //       order: userOrder,
-  //     };
-  //   } catch (error) {
-  //     data = {
-  //       type: "get_orders",
-  //       identifier,
-  //       error: error instanceof Error ? error.message : "Something went wrong",
-  //     };
-  //   }
-  // }
+  if (parsedResponse.requestType === "get_order") {
+    const { userId, orderId, identifier } = parsedResponse;
+    try {
+      const userOrder = Object.values(PERP_ORDERBOOK)
+        .flatMap((book) => [...book.asks, ...book.bids])
+        .find((order) => order.userId === userId && order.orderId === orderId);
+
+      data = {
+        type: "get_order",
+        identifier,
+        order: userOrder,
+      };
+    } catch (error) {
+      data = {
+        type: "get_orders",
+        identifier,
+        error: error instanceof Error ? error.message : "Something went wrong",
+      };
+    }
+  }
 
   // if (parsedResponse.requestType === "delete_order") {
   //   const { userId, orderId, identifier } = parsedResponse;
@@ -413,37 +489,28 @@ for await (const parsedResponse of incomingMessageStream(subscriberClient)) {
   //   }
   // }
 
-  // if (parsedResponse.requestType === "get_all_orders") {
-  //   const userId = parsedResponse.userId;
-  //   const identifier = parsedResponse.identifier;
-  //   try {
-  //     const userOrders = Object.entries(ORDERBOOK)
-  //       .map(([marketId, orderbook]) => {
-  //         const orders = [...orderbook.bids, ...orderbook.asks].filter(
-  //           (order) => order.userId === userId,
-  //         );
-  //         return {
-  //           marketId,
-  //           orders,
-  //         };
-  //       })
-  //       .filter((marketOrders) => {
-  //         return marketOrders.orders.length > 0;
-  //       });
-  //     // Add userOrders to the response
-  //     data = {
-  //       type: "get_all_orders",
-  //       identifier,
-  //       orders: userOrders,
-  //     };
-  //   } catch (error) {
-  //     data = {
-  //       type: "get_all_orders",
-  //       identifier,
-  //       error: error instanceof Error ? error.message : "Something went wrong",
-  //     };
-  //   }
-  // }
+  if (parsedResponse.requestType === "get_all_orders") {
+    const userId = parsedResponse.userId;
+    const identifier = parsedResponse.identifier;
+    try {
+      const userOrders = Object.values(PERP_ORDERBOOK)
+        .flatMap((book) => [...book.asks, ...book.bids])
+        .filter((order) => order.userId === userId);
+
+      // Add userOrders to the response
+      data = {
+        type: "get_all_orders",
+        identifier,
+        orders: userOrders,
+      };
+    } catch (error) {
+      data = {
+        type: "get_all_orders",
+        identifier,
+        error: error instanceof Error ? error.message : "Something went wrong",
+      };
+    }
+  }
 
   // if (parsedResponse.requestType === "get_balance") {
   //   const { userId, identifier } = parsedResponse;

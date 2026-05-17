@@ -66,3 +66,6 @@ The engine blocks on Redis with `BRPOP` against:
 - `src/index.ts` currently calls placeholder TODO branches for perpetual market orders.
 - `src/perpMatching.ts` contains copied spot-engine logic in some sections and needs cleanup before production use.
 - The service should be treated as experimental until type errors and TODOs are resolved.
+## TODOs
+
+-
